@@ -1,0 +1,2 @@
+SubjectID,Gender,Age,BallExperience,TrialID,TrialID_in_block,BlockID,BoardID,SU_level,HV_primary,HV_secondary_count,HV_secondary_collision,PhysOutcome,Ball_start_x,Ball_start_side,Stim_onset,Response_time,RT,Choice,Correct,Confidence_response_time,Confidence_RT,Confidence,Feedback_onset,Ball_drop_start,Ball_drop_end
+1,男,1,50,1,1,1,B0408,4,congruent,unknown,unknown,left,768.0,left,14.917466299999887,16.28680940000004,1369.343100000151,left,1,18.10136239999997,1814.5529999999326,83,18.10137009999994,18.10166830000003,21.551373900000044

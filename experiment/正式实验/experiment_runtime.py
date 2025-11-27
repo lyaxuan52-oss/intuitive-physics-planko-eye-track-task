@@ -9,13 +9,7 @@ from pathlib import Path
 from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, messagebox
-
-try:
-    import pylink
-except Exception:
-    pylink = None
-    print("Warning: 'pylink' is not available; Eyelink recording will be disabled.")
-
+import pylink
 from psychopy import visual, core, event, gui, monitors
 from psychopy.hardware import keyboard
 
@@ -36,14 +30,14 @@ class SubjectInfoDialog:
         """显示对话框并返回被试信息"""
         root = tk.Tk()
         root.title("被试信息")
-        root.geometry("400x300")
+        root.geometry("800x600")
         root.resizable(False, False)
         
         # 居中显示
         root.update_idletasks()
-        x = (root.winfo_screenwidth() // 2) - (400 // 2)
-        y = (root.winfo_screenheight() // 2) - (300 // 2)
-        root.geometry(f"400x300+{x}+{y}")
+        x = (root.winfo_screenwidth() // 2) - (600 // 2)
+        y = (root.winfo_screenheight() // 2) - (800 // 2)
+        root.geometry(f"800x600+{x}+{y}")
         
         # 创建输入框
         fields = {}
@@ -150,6 +144,7 @@ class PlankoExperiment:
         # 初始化窗口和刺激（稍后在setup中完成）
         self.win = None
         self.kb = None
+        self.mouse = None
         # Eyelink 相关
         self.el = None
         self.edf_file = None
@@ -209,8 +204,9 @@ class PlankoExperiment:
         self.coord_scale_x = actual_width / DESIGN_WIDTH
         self.coord_scale_y = actual_height / DESIGN_HEIGHT
         
-        # 创建键盘
+        # 创建键盘和鼠标（鼠标在信心度阶段启用），提前创建以减轻第一个trial的卡顿
         self.kb = keyboard.Keyboard()
+        self.mouse = event.Mouse(win=self.win, visible=False)
         
         # 创建刺激对象（使用更新后的参数）
         self.fixation = visual.Circle(
@@ -286,23 +282,34 @@ class PlankoExperiment:
             )
         )
         
-        # 信心度输入提示文字
+        # 信心度输入提示文字（放在较上方，避免与滑条重叠）
         self.confidence_prompt = visual.TextStim(
             self.win, text='', 
-            pos=(0, 50), height=40, color='white'
+            pos=(0, 200), height=40, color='white'
         )
         
-        # 信心度当前值显示
+        # 信心度当前值显示（在滑条上方居中）
         self.confidence_value_text = visual.TextStim(
             self.win, text='', 
-            pos=(0, -100), height=80, color='yellow', bold=True
+            pos=(0, 80), height=80, color='yellow', bold=True
         )
         
-        # 信心度提示文字
+        # 信心度提示文字（放在确认按钮更下方，避免重叠）
         self.confidence_instruction = visual.TextStim(
             self.win, text='', 
-            pos=(0, -250), height=30, color='white'
+            pos=(0, -230), height=28, color='white'
         )
+
+        # 预热一次信心度显示，以减少第一个 trial 按键后的卡顿
+        self.confidence_prompt.text = '加载中...'
+        self.confidence_value_text.text = '50%'
+        self.confidence_instruction.text = ''
+        self.confidence_prompt.draw()
+        self.confidence_value_text.draw()
+        self.confidence_instruction.draw()
+        self.win.flip()
+        core.wait(0.02)
+        self.win.flip()
     
     def setup_eyelink(self):
         """初始化Eyelink（如果可用）"""
@@ -358,43 +365,6 @@ class PlankoExperiment:
         except Exception as e:
             print(f"设置采样/事件过滤失败: {e}")
 
-        # 定义静态兴趣区（AOI）：左右接球器和中央不确定区域（CU）
-        try:
-            wall_height = 80  # 与视觉呈现中的侧壁高度保持一致
-
-            # 左接球器ROI（包含底部和侧壁）
-            left_catcher_left = int(CATCHER_LEFT_X - CATCHER_WIDTH / 2)
-            left_catcher_right = int(CATCHER_LEFT_X + CATCHER_WIDTH / 2)
-            left_catcher_top = int(CATCHER_Y - wall_height)
-            left_catcher_bottom = int(CATCHER_Y + CATCHER_HEIGHT / 2)
-            self.el.sendMessage(
-                f"!V IAREA RECTANGLE 1 {left_catcher_left} {left_catcher_top} "
-                f"{left_catcher_right} {left_catcher_bottom} LEFT_CATCHER"
-            )
-
-            # 右接球器ROI
-            right_catcher_left = int(CATCHER_RIGHT_X - CATCHER_WIDTH / 2)
-            right_catcher_right = int(CATCHER_RIGHT_X + CATCHER_WIDTH / 2)
-            right_catcher_top = int(CATCHER_Y - wall_height)
-            right_catcher_bottom = int(CATCHER_Y + CATCHER_HEIGHT / 2)
-            self.el.sendMessage(
-                f"!V IAREA RECTANGLE 2 {right_catcher_left} {right_catcher_top} "
-                f"{right_catcher_right} {right_catcher_bottom} RIGHT_CATCHER"
-            )
-
-            # 中央不确定区域（CU）：位于两接球器之间、挡板主要分布区域
-            cu_left = int(CATCHER_LEFT_X + CATCHER_WIDTH / 2)
-            cu_right = int(CATCHER_RIGHT_X - CATCHER_WIDTH / 2)
-            cu_top = int(PLANK_Y_MIN)
-            cu_bottom = int(CATCHER_Y - 20)
-            if cu_right > cu_left and cu_bottom > cu_top:
-                self.el.sendMessage(
-                    f"!V IAREA RECTANGLE 3 {cu_left} {cu_top} "
-                    f"{cu_right} {cu_bottom} CU_REGION"
-                )
-        except Exception as e:
-            print(f"定义AOI失败: {e}")
-
         try:
             self.el.sendCommand(
                 f"add_file_preamble_text 'SubjectID {self.subject_id}'"
@@ -448,14 +418,16 @@ class PlankoExperiment:
         您的任务是：预测小球会落入哪个接球器。
         
         按键说明：
-        - 按 'F' 键：预测小球落入左侧（绿色）
-        - 按 'J' 键：预测小球落入右侧（蓝色）
+        - 按 鼠标左键 键：预测小球落入左侧（绿色）
+        - 按 鼠标右键：预测小球落入右侧（蓝色）
         
         做出判断后，您需要报告对这个判断的信心度（0-100%）。
         
         然后您会观看到小球的真实下落动画和正确与否作为反馈。
         
-        实验总共有5个block，每个block之间会有休息时间。
+        实验总共有5个block，每个block有90个试次，每个block之间会有休息时间。
+        
+        请不要过分纠结于决策。
         
         准备好后，按空格键开始实验。
         """
@@ -527,128 +499,170 @@ class PlankoExperiment:
         
         self.fixation.draw()
         self.win.flip()
-        fixation_onset = core.getTime()
-        trial_record['Fixation_onset'] = fixation_onset
-        if self.el is not None and pylink is not None:
-            try:
-                self.el.sendMessage("FIX_ONSET")
-            except Exception as e:
-                print(f"Eyelink FIX_ONSET failed: {e}")
         core.wait(fixation_duration)
         
         # 2. 呈现静态Planko场景
         planks = self.draw_planks(trial_info['Planks'])
         
-        # 绘制场景
-        for plank in planks:
-            plank.draw()
-        
-        # 绘制球的起始位置（每个trial自己的起点，可以在左或右）
-        ball_start_x = trial_info.get('Ball_start_x', BALL_START_X)
-        psychopy_ball_x = ball_start_x - SCREEN_WIDTH / 2
-        psychopy_ball_y = SCREEN_HEIGHT / 2 - BALL_START_Y
-        self.ball.pos = (psychopy_ball_x, psychopy_ball_y)
-        self.ball.draw()
-        
-        # 绘制接球器（容器的底部和两侧壁）
-        for stim in self.catcher_left_parts:
-            stim.draw()
-        for stim in self.catcher_right_parts:
-            stim.draw()
-        
-        self.win.flip()
-        stim_onset = core.getTime()
-        trial_record['Stim_onset'] = stim_onset
-        if self.el is not None and pylink is not None:
-            try:
-                self.el.sendMessage("STIM_ONSET")
-            except Exception as e:
-                print(f"Eyelink STIM_ONSET failed: {e}")
-        
-        # 3. 等待被试响应（F=左，J=右）
+        # 准备鼠标用于选择（点击左右接球器）
+        if self.mouse is None:
+            self.mouse = event.Mouse(win=self.win, visible=True)
+        else:
+            self.mouse.setVisible(True)
+
+        # 为了避免上一 trial 的按键残留，这里清一次键盘缓冲
+        event.clearEvents()
+
+        # 在循环中持续呈现场景，直到被试通过鼠标点击作出选择
+        # 约定：鼠标左键 = 选择左边，鼠标右键 = 选择右边（与位置无关）
+        choice = None
+        prev_left = False
+        prev_right = False
         self.kb.clock.reset()
-        keys = event.waitKeys(keyList=['f', 'j', 'escape'])
-        
-        if 'escape' in keys:
-            self.quit_experiment()
-        
+        stim_onset = None
+
+        while choice is None:
+            # 绘制静态场景
+            for plank in planks:
+                plank.draw()
+            
+            # 绘制球的起始位置（每个trial自己的起点，可以在左或右）
+            ball_start_x = trial_info.get('Ball_start_x', BALL_START_X)
+            psychopy_ball_x = ball_start_x - SCREEN_WIDTH / 2
+            psychopy_ball_y = SCREEN_HEIGHT / 2 - BALL_START_Y
+            self.ball.pos = (psychopy_ball_x, psychopy_ball_y)
+            self.ball.draw()
+            
+            # 绘制接球器（容器的底部和两侧壁）
+            for stim in self.catcher_left_parts:
+                stim.draw()
+            for stim in self.catcher_right_parts:
+                stim.draw()
+            
+            self.win.flip()
+
+            if stim_onset is None:
+                stim_onset = core.getTime()
+                trial_record['Stim_onset'] = stim_onset
+
+            # 读取鼠标与键盘事件
+            left, _, right = self.mouse.getPressed()
+
+            # 左键第一次按下 → 选左边
+            if left and not prev_left:
+                choice = 'left'
+
+            # 右键第一次按下 → 选右边
+            if right and not prev_right:
+                choice = 'right'
+
+            prev_left = left
+            prev_right = right
+
+            keys = event.getKeys()
+            if 'escape' in keys:
+                self.quit_experiment()
+
+        # 记录反应时间和选择结果
         response_time = core.getTime()
         trial_record['Response_time'] = response_time
         trial_record['RT'] = (response_time - stim_onset) * 1000  # 转换为ms
-        trial_record['Choice'] = 'left' if 'f' in keys else 'right'
+        trial_record['Choice'] = choice
         trial_record['Correct'] = 1 if trial_record['Choice'] == trial_info['PhysOutcome'] else 0
-        if self.el is not None and pylink is not None:
-            try:
-                self.el.sendMessage(
-                    f"RESPONSE CHOICE {trial_record['Choice']} RT {int(trial_record['RT'])}"
-                )
-            except Exception as e:
-                print(f"Eyelink RESPONSE marker failed: {e}")
         
-        # 4. 信心度报告（数字键输入模式）
+        # 4. 信心度报告（鼠标滑条，不再使用键盘输入）
         confidence_start = core.getTime()
-        confidence_input = ''  # 存储输入的数字
+        # 确保有一个与当前窗口绑定的鼠标对象
+        if self.mouse is None:
+            self.mouse = event.Mouse(win=self.win, visible=True)
+        else:
+            self.mouse.setVisible(True)
+            self.mouse.setPos((0, -40))
+
+        confidence_value = 50  # 初始值 50%
         confirmed = False
-        
+
+        # 在屏幕中央偏下位置画一条水平滑条和一个指示条
+        slider_width = 800
+        slider_height = 10
+        slider_y = -40
+        slider = visual.Rect(
+            self.win, width=slider_width, height=slider_height,
+            pos=(0, slider_y), fillColor='grey', lineColor='white'
+        )
+        marker = visual.Rect(
+            self.win, width=14, height=50,
+            pos=(0, slider_y), fillColor='yellow', lineColor='yellow'
+        )
+
+        # 确认按钮：只有点击该按钮才真正结束信心度输入，防止误点滑条直接跳 trial
+        confirm_y = slider_y - 100
+        confirm_button = visual.Rect(
+            self.win, width=180, height=60,
+            pos=(0, confirm_y), fillColor='dimgray', lineColor='white'
+        )
+        confirm_text = visual.TextStim(
+            self.win, text='确认', pos=(0, confirm_y), height=32, color='white'
+        )
+
+        prev_left = False
+
         while not confirmed:
-            # 显示提示
-            self.confidence_prompt.text = '请输入您的信心度（0-100）'
+            mx, my = self.mouse.getPos()
+            half_w = slider_width / 2.0
+
+            # 显示提示（在上方）
+            self.confidence_prompt.text = '请用鼠标在滑条上选择您的信心度（0-100）'
             self.confidence_prompt.draw()
-            
-            # 显示当前输入的值
-            if confidence_input:
-                self.confidence_value_text.text = f'{confidence_input}%'
-            else:
-                self.confidence_value_text.text = '_'
+
+            # 显示当前数值（在滑条上方居中）
+            self.confidence_value_text.text = f'{confidence_value}%'
             self.confidence_value_text.draw()
-            
-            # 显示操作说明
-            self.confidence_instruction.text = '输入数字（0-100），按空格键确认，按退格键删除'
+
+            # 显示操作说明（在滑条下方，分两行显示以避免与按钮重叠）
+            # 说明：在滑条上“点击”对应位置来选择数值，确认按钮单独点击
+            self.confidence_instruction.text = '在滑条上点击对应位置选择数值，\n再点击下方“确认”按钮结束；按 ESC 退出实验'
             self.confidence_instruction.draw()
-            
+
+            # 画滑条和指示器
+            slider.draw()
+            marker.draw()
+
+            # 画确认按钮
+            confirm_button.draw()
+            confirm_text.draw()
+
             self.win.flip()
-            
-            # 检查按键
+
+            # 检查鼠标和键盘事件
+            left, _, _ = self.mouse.getPressed()
+            if left and not prev_left:
+                # 若在滑条区域内点击，则更新信心度
+                if slider.contains(self.mouse):
+                    rel = max(-1.0, min(1.0, mx / half_w))  # -1 ~ 1
+                    confidence_value = int(round((rel + 1.0) / 2.0 * 100))
+                    confidence_value = max(0, min(100, confidence_value))
+                    marker.pos = (rel * half_w, slider_y)
+                # 若在确认按钮区域内点击，则结束信心度输入
+                elif confirm_button.contains(self.mouse):
+                    confirmed = True
+
+            prev_left = left
+
             keys = event.getKeys()
-            
             if 'escape' in keys:
                 self.quit_experiment()
-            elif 'backspace' in keys:
-                # 删除最后一个数字
-                confidence_input = confidence_input[:-1]
-            elif 'space' in keys:
-                # 按空格确认输入
-                if confidence_input:
-                    val = int(confidence_input)
-                    if 0 <= val <= 100:
-                        confirmed = True
-            else:
-                # 处理数字输入
-                for key in keys:
-                    if key.isdigit() and len(confidence_input) < 3:
-                        # 限制最多3位数
-                        temp = confidence_input + key
-                        if int(temp) <= 100:
-                            confidence_input = temp
-        
+
+        self.mouse.setVisible(False)
+
         confidence_response_time = core.getTime()
         trial_record['Confidence_response_time'] = confidence_response_time
         trial_record['Confidence_RT'] = (confidence_response_time - response_time) * 1000
-        trial_record['Confidence'] = int(confidence_input)
-        if self.el is not None and pylink is not None:
-            try:
-                self.el.sendMessage("CONF_END")
-            except Exception as e:
-                print(f"Eyelink CONF_END failed: {e}")
+        trial_record['Confidence'] = int(confidence_value)
         
         # 5. 反馈：播放真实下落动画
         feedback_onset = core.getTime()
         trial_record['Feedback_onset'] = feedback_onset
-        if self.el is not None and pylink is not None:
-            try:
-                self.el.sendMessage("FEEDBACK_ONSET")
-            except Exception as e:
-                print(f"Eyelink FEEDBACK_ONSET failed: {e}")
         
         trajectory = json.loads(trial_info['True_trajectory'])
         ball_drop_start = core.getTime()
@@ -676,11 +690,6 @@ class PlankoExperiment:
         
         ball_drop_end = core.getTime()
         trial_record['Ball_drop_end'] = ball_drop_end
-        if self.el is not None and pylink is not None:
-            try:
-                self.el.sendMessage("FEEDBACK_END")
-            except Exception as e:
-                print(f"Eyelink FEEDBACK_END failed: {e}")
         
         # 5. 轨迹播放结束后直接进入ITI（不再单独文字反馈）
         

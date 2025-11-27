@@ -175,7 +175,7 @@ def show_instructions(win, n_trials: int):
         "屏幕上会出现一个装置，上方有一个小球，下面有左右两个接球器。\n\n"
         "你的任务是：在球下落之前，预测它最终会落入左边还是右边的接球器。\n\n"
         "本实验只需要二选一，不需要输入信心度：\n"
-        "按 F 键表示‘左边’，按 J 键表示‘右边’。\n\n"
+        "全程使用鼠标操作 —— 用鼠标点击你认为小球会落入的接球器（左/右）。\n\n"
         f"本实验共 {n_trials} 个试次，中途如需终止，可以按 ESC 键退出。\n\n"
         "按空格键开始实验，或按 ESC 退出。"
     )
@@ -214,12 +214,17 @@ def show_fixation(win):
 
 
 def collect_choice(win, trial_index: int, n_trials: int, board_visuals, ball_start_x: float):
-    """显示当前板子并采集被试的二选一反应 (F/J)。返回 response_side, RT。"""
+    """显示当前板子并采集被试的二选一反应（鼠标点击左右接球器）。返回 response_side, RT。"""
     planks, left_catcher, right_catcher, ball = board_visuals
 
     # 起始球位置
     ball_x_pix, ball_y_pix = phys_to_psychopy(ball_start_x, BALL_START_Y)
     ball.pos = (ball_x_pix, ball_y_pix)
+
+    # 鼠标用于左右选择（左键=左边，右键=右边），不再限制点击位置
+    mouse = event.Mouse(win=win, visible=True)
+    prev_left = False
+    prev_right = False
 
     clock = core.Clock()
     event.clearEvents()
@@ -233,18 +238,26 @@ def collect_choice(win, trial_index: int, n_trials: int, board_visuals, ball_sta
         ball.draw()
         win.flip()
 
-        keys = event.getKeys(keyList=["f", "j", "escape"], timeStamped=clock)
-        if not keys:
-            continue
+        # 鼠标左/右键从未按下 -> 按下时，根据按键直接决定左右
+        left, _, right = mouse.getPressed()
 
-        key, rt = keys[0]
-        if key == "escape":
+        # 左键第一次按下 → 选择左边
+        if left and not prev_left:
+            rt = float(clock.getTime())
+            return "left", rt
+
+        # 右键第一次按下 → 选择右边
+        if right and not prev_right:
+            rt = float(clock.getTime())
+            return "right", rt
+
+        prev_left = left
+        prev_right = right
+
+        # 仍然允许 ESC 中止实验
+        if "escape" in event.getKeys(keyList=["escape"]):
             win.close()
             core.quit()
-        if key == "f":
-            return "left", float(rt)
-        if key == "j":
-            return "right", float(rt)
 
 
 def play_trajectory(win, trajectory, board_visuals):

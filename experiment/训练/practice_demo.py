@@ -154,8 +154,9 @@ def show_instructions(win):
         "练习阶段\n\n"
         "屏幕上会出现一个装置，上方有一个小球，下面有左右两个接球器。\n\n"
         "你的任务是：在球下落之前，预测它最终会落入左边还是右边的接球器。\n\n"
-        "正式实验中，你将按 F 键表示‘左边’，按 J 键表示‘右边’。\n\n"
-        "在接下来的练习中，请先做出预测，然后会播放球的真实轨迹供你观察。\n\n"
+        "本练习和正式实验中，都是**用鼠标操作**：用鼠标点击你认为小球会落入的接球器（左/右）。\n\n"
+        "正式实验中还会在选择之后出现一个信心度滑条，这里练习阶段暂时不需要报告信心度。\n\n"
+        "在接下来的练习中，请先用鼠标做出预测，然后会播放球的真实轨迹供你观察。\n\n"
         "本练习脚本不会记录任何数据，只是帮助你理解任务。\n\n"
         "按空格键开始练习，或按 ESC 退出。"
     )
@@ -177,8 +178,14 @@ def show_instructions(win):
 
 
 def show_prediction_screen(win, trial_index, n_trials, board_visuals):
-    """显示当前板子，请被试做出预测（F=左, J=右）。"""
+    """显示当前板子，请被试用鼠标左/右键做出预测（左键=左边，右键=右边）。"""
     planks, left_catcher, right_catcher, ball = board_visuals
+
+    # 鼠标用于左右选择（左键=左边，右键=右边），不再限制点击位置
+    mouse = event.Mouse(win=win, visible=True)
+    prev_left = False
+    prev_right = False
+
     while True:
         for p in planks:
             p.draw()
@@ -187,14 +194,24 @@ def show_prediction_screen(win, trial_index, n_trials, board_visuals):
         ball.draw()
         win.flip()
 
-        keys = event.getKeys(keyList=["f", "j", "escape"])
-        if "escape" in keys:
+        # 鼠标左/右键从未按下 -> 按下时，根据按键直接决定左右
+        left, _, right = mouse.getPressed()
+
+        # 左键第一次按下 → 选择左边
+        if left and not prev_left:
+            return "left"
+
+        # 右键第一次按下 → 选择右边
+        if right and not prev_right:
+            return "right"
+
+        prev_left = left
+        prev_right = right
+
+        # 仍然允许 ESC 中止练习
+        if "escape" in event.getKeys(keyList=["escape"]):
             win.close()
             core.quit()
-        if "f" in keys:
-            return "left"
-        if "j" in keys:
-            return "right"
 
 
 def play_trajectory(win, trajectory, board_visuals):
