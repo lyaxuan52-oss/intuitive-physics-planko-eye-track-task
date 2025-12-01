@@ -11,6 +11,7 @@ DESIGN_HEIGHT = 1080
 SCREEN_WIDTH = DESIGN_WIDTH
 SCREEN_HEIGHT = DESIGN_HEIGHT
 FPS = 60
+EYELINK_HOST_IP = "100.1.1.1"
 
 # 球参数
 BALL_RADIUS = 10  # pixels
@@ -40,9 +41,11 @@ CATCHER_RIGHT_X = SCREEN_WIDTH * 0.60  # 1152
 # 生成时自动过滤没有打到接球器的试次（outcome=='none'）
 
 # 物理参数
-GRAVITY = 980  # pixels/s^2 (加快生成速度)
-ELASTICITY = 1
-FRICTION = 0.6
+# 这里将重力加速度提升到 1500，以获得更快的下落速度；
+# 同时降低弹性、提高摩擦，使碰撞更贴近日常直觉（弹起高度小，多沿板滑落）。
+GRAVITY = 1500     # pixels/s^2
+ELASTICITY = 1   # 全局弹性系数：中等偏上弹性，在正确方向上有明显反弹
+FRICTION = 0.9     # 较高摩擦，鼓励“顺势下滑”而不是沿板乱跳
 
 # ============ SU计算参数 ============
 N_JITTER_SIMULATIONS = 100  # 100次jitter模拟
@@ -110,4 +113,4 @@ def update_screen_params(actual_width, actual_height):
     PLANK_Y_MIN = int(200 * scale)
     PLANK_Y_MAX = SCREEN_HEIGHT - int(200 * scale)
     
-    GRAVITY = int(980 * scale)  # 重力也需要缩放以保持相同的物理效果
+    GRAVITY = int(1500 * scale)  # 重力也需要缩放以保持相同的物理效果

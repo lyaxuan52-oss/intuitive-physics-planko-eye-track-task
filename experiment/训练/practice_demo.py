@@ -3,7 +3,7 @@ import sys
 import csv
 import json
 import random
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import numpy as np
 from psychopy import visual, event, core
@@ -33,7 +33,7 @@ VISUAL_DT = 1.0 / FPS
 N_PRACTICE_TRIALS = 20  # 每个被试实际练习的trial数
 
 STIMULI_PATH = SCRIPT_DIR / "stimuli_practice.csv"
-_PRACTICE_CACHE: List[Dict] | None = None
+_PRACTICE_CACHE: Optional[List[Dict]] = None
 
 
 def load_practice_stimuli() -> List[Dict]:

@@ -224,72 +224,172 @@ def _generate_single_board(args):
         board['SU_level'] = su_level
     return board
 
+def _assign_su_level(su_raw, su_bins):
+    """根据连续 SU 值分配到 1..SU_LEVELS 的等级（与原来的区间定义保持一致）"""
+    idx = np.searchsorted(su_bins, su_raw, side="right") - 1
+    if idx < 0:
+        idx = 0
+    if idx >= SU_LEVELS:
+        idx = SU_LEVELS - 1
+    return idx + 1
 
-def generate_all_stimuli(use_parallel=True):
+
+def generate_all_stimuli(use_parallel=False):
     """
-    生成所有刺激配置
+    生成所有刺激配置（流式按桶填充）
     
-    分布策略：
-    - ambiguous 和 congruent: 每个 SU level 严格生成 TRIALS_PER_CONDITION 个试次
-    - conflict: 总共生成约 TRIALS_PER_CONDITION * SU_LEVELS 个试次，SU 分布不严格要求均匀
+    新策略：
+    - 不再为每个 HV×SU 组合单独开任务反复试，而是不断随机生成板子；
+    - 只要球能落入接球器，就计算该板的 HV 和 SU，并按 HV×SU_level 丢入对应桶；
+    - 对 ambiguous 和 congruent：每个 SU_level 各收集 TRIALS_PER_CONDITION 个 trial；
+    - 对 conflict：总共收集 TRIALS_PER_CONDITION * SU_LEVELS 个 trial，SU_level 只用于记录，不做配额约束。
     """
-    print("=" * 50)
-    print("开始生成刺激配置...")
-    print("=" * 50)
-    
-    # 定义SU等级边界
+    print('=' * 50)
+    print('开始生成刺激配置...')
+    print('=' * 50)
+
+    # 定义 SU 等级边界
     su_bins = np.linspace(0, 1, SU_LEVELS + 1)
-    
-    # 准备所有任务参数
-    tasks = []
+
+    # 目标：ambiguous / congruent × 每个 SU_level 各收集 TRIALS_PER_CONDITION 个
+    target_per_bin = TRIALS_PER_CONDITION
+    hv_stage1 = ['congruent', 'ambiguous']
+    # 计数器：hv -> [0, c1, c2, ..., c_SU_LEVELS]（0号位不用）
+    hv_su_counts = {
+        hv: np.zeros(SU_LEVELS + 1, dtype=int)
+        for hv in hv_stage1
+    }
+
+    boards = []
     board_id = 0
-    
-    # 对 ambiguous 和 congruent：严格按 SU level 生成
-    for hv_type in ['congruent', 'ambiguous']:
-        for su_level in range(1, SU_LEVELS + 1):
-            su_min = su_bins[su_level - 1]
-            su_max = su_bins[su_level]
-            for _ in range(TRIALS_PER_CONDITION):
-                tasks.append((hv_type, su_min, su_max, board_id, su_level))
-                board_id += 1
-    
-    # 对 conflict：生成总数接近的试次，但不严格限制每个 SU level
-    # 总数 = TRIALS_PER_CONDITION * SU_LEVELS（与 ambiguous/congruent 总数一致）
+
+    total_stage1 = len(hv_stage1) * SU_LEVELS * target_per_bin
+    print(f"\n目标：ambiguous / congruent 每个 SU level 各 {target_per_bin} 个，共 {total_stage1} 个")
+
+    with tqdm(total=total_stage1, desc='生成 ambiguous/congruent') as pbar:
+        while True:
+            # 所有 hv×SU 桶都已满，结束 stage1
+            done = True
+            for hv in hv_stage1:
+                if np.any(hv_su_counts[hv][1:] < target_per_bin):
+                    done = False
+                    break
+            if done:
+                break
+
+            # 1) 随机生成一块板
+            planks = generate_random_planks(N_PLANKS, seed=None)
+
+            # 随机决定起点侧
+            start_side = np.random.choice(['left', 'right'])
+            start_x = CATCHER_LEFT_X if start_side == 'left' else CATCHER_RIGHT_X
+
+            # 2) 跑一次物理，要求球必须落入某个接球器
+            space = create_space()
+            ball_body, ball_shape = create_ball(space, start_x, BALL_START_Y)
+            create_catchers(space)
+            for plank in planks:
+                create_plank(space, plank['x'], plank['y'], plank['angle'])
+
+            outcome, trajectory, first_collision_side = run_simulation(space, ball_body, ball_shape, planks)
+            if outcome not in ('left', 'right'):
+                continue
+
+            # 3) 基于这一次的真实轨迹，计算 HV
+            hv_primary, hv_secondary_count, hv_secondary_collision = determine_hv(
+                planks, outcome, first_collision_side, start_side
+            )
+
+            if hv_primary not in hv_stage1:
+                # 只在 stage1 中收集 ambiguous / congruent，其它类型跳过
+                continue
+
+            # 4) 只有在该 HV 还有未填满的 SU 桶时，才去计算 SU（避免浪费大量 jitter 计算）
+            # 先粗略检查是否还有任何 SU 桶未满
+            if np.all(hv_su_counts[hv_primary][1:] >= target_per_bin):
+                continue
+
+            # 计算 SU（基于当前起点侧），并映射到 SU_level
+            su_raw = calculate_su(planks, start_side)
+            su_level = _assign_su_level(su_raw, su_bins)
+
+            # 如果该 HV×SU_level 桶已经满了，则跳过
+            if hv_su_counts[hv_primary][su_level] >= target_per_bin:
+                continue
+
+            # 5) 接受这块板，记录所有信息
+            board = {
+                'planks': planks,
+                'su_raw': su_raw,
+                'hv_primary': hv_primary,
+                'hv_secondary_count': hv_secondary_count,
+                'hv_secondary_collision': hv_secondary_collision,
+                'phys_outcome': outcome,
+                'trajectory': trajectory,
+                'ball_start_side': start_side,
+                'ball_start_x': start_x,
+            }
+            board['BoardID'] = f"B{board_id:04d}"
+            board['SU_level'] = su_level
+            boards.append(board)
+
+            hv_su_counts[hv_primary][su_level] += 1
+            board_id += 1
+            pbar.update(1)
+
+    # Stage 2: 生成 conflict 条件（总数 = TRIALS_PER_CONDITION * SU_LEVELS），不再计算 SU
     n_conflict_trials = TRIALS_PER_CONDITION * SU_LEVELS
-    print(f"\nambiguous/congruent: 每个 SU level {TRIALS_PER_CONDITION} 个试次，共 {TRIALS_PER_CONDITION * SU_LEVELS} 个")
-    print(f"conflict: 总共约 {n_conflict_trials} 个试次，SU 分布不严格限制")
-    
-    for _ in range(n_conflict_trials):
-        # 随机选择一个 SU level（允许不均匀分布）
-        su_level = np.random.randint(1, SU_LEVELS + 1)
-        su_min = su_bins[su_level - 1]
-        su_max = su_bins[su_level]
-        tasks.append(('conflict', su_min, su_max, board_id, su_level))
-        board_id += 1
-    
-    print(f"\n总共需要生成 {len(tasks)} 个刺激配置")
-    
-    # 并行生成
-    if use_parallel:
-        n_cores = cpu_count()
-        print(f"使用 {n_cores} 个CPU核心并行生成...")
-        
-        with Pool(processes=n_cores) as pool:
-            all_boards = list(tqdm(
-                pool.imap(_generate_single_board, tasks),
-                total=len(tasks),
-                desc="生成刺激"
-            ))
-    else:
-        # 串行生成（调试用）
-        all_boards = []
-        for task in tqdm(tasks, desc="生成刺激"):
-            board = _generate_single_board(task)
-            all_boards.append(board)
-    
-    # 过滤掉None（生成失败的）
-    all_boards = [b for b in all_boards if b is not None]
-    return all_boards
+    print(f"\n开始生成 conflict 条件，总目标数 {n_conflict_trials}（不计算 SU，只按 hv_primary=='conflict' 收集）")
+
+    conflict_count = 0
+    with tqdm(total=n_conflict_trials, desc='生成 conflict') as pbar_conflict:
+        while conflict_count < n_conflict_trials:
+            planks = generate_random_planks(N_PLANKS, seed=None)
+
+            start_side = np.random.choice(['left', 'right'])
+            start_x = CATCHER_LEFT_X if start_side == 'left' else CATCHER_RIGHT_X
+
+            space = create_space()
+            ball_body, ball_shape = create_ball(space, start_x, BALL_START_Y)
+            create_catchers(space)
+            for plank in planks:
+                create_plank(space, plank['x'], plank['y'], plank['angle'])
+
+            outcome, trajectory, first_collision_side = run_simulation(space, ball_body, ball_shape, planks)
+            if outcome not in ('left', 'right'):
+                continue
+
+            hv_primary, hv_secondary_count, hv_secondary_collision = determine_hv(
+                planks, outcome, first_collision_side, start_side
+            )
+
+            if hv_primary != 'conflict':
+                continue
+
+            # 对 conflict：不计算 SU，直接接受；SU_raw/SU_level 使用占位值
+            su_raw = np.nan
+            su_level = 0
+
+            board = {
+                'planks': planks,
+                'su_raw': su_raw,
+                'hv_primary': hv_primary,
+                'hv_secondary_count': hv_secondary_count,
+                'hv_secondary_collision': hv_secondary_collision,
+                'phys_outcome': outcome,
+                'trajectory': trajectory,
+                'ball_start_side': start_side,
+                'ball_start_x': start_x,
+            }
+            board['BoardID'] = f"B{board_id:04d}"
+            board['SU_level'] = su_level
+            boards.append(board)
+
+            conflict_count += 1
+            board_id += 1
+            pbar_conflict.update(1)
+
+    return boards
 
 
 def save_stimuli(boards, output_dir='stimuli'):

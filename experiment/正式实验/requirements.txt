@@ -3,3 +3,5 @@ psychopy==2023.2.3
 numpy==1.24.3
 pandas==2.0.3
 pylink
+# 说明：pylink / EyeLinkCoreGraphicsPsychoPy 需要通过 SR Research 提供的 Eyelink SDK 安装，
+# 不是标准 pip 包。如果已经安装官方 SDK，此处 pylink 行仅作依赖标记。

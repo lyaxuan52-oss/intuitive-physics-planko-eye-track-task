@@ -21,6 +21,8 @@ def create_ball(space, x, y):
     moment = pymunk.moment_for_circle(mass, 0, BALL_RADIUS)
     body = pymunk.Body(mass, moment)
     body.position = x, y
+    # 为了抑制极端高弹后长时间乱弹，这里给球体增加轻微线性阻尼
+    body.damping = 0.98
     shape = pymunk.Circle(body, BALL_RADIUS)
     shape.elasticity = ELASTICITY
     shape.friction = FRICTION
@@ -34,16 +36,15 @@ def create_plank(space, x, y, angle, width=PLANK_WIDTH, height=PLANK_HEIGHT):
     """创建静态挡板"""
     body = pymunk.Body(body_type=pymunk.Body.STATIC)
     body.position = x, y
-    body.angle = np.radians(angle)
-    
-    # 创建矩形挡板
-    vertices = [
-        (-width/2, -height/2),
-        (width/2, -height/2),
-        (width/2, height/2),
-        (-width/2, height/2)
-    ]
-    shape = pymunk.Poly(body, vertices)
+    # 注意：PsychoPy 绘制时使用的是 ori = -angle，为了保证画面上的倾斜方向
+    # 和物理仿真中的倾斜方向一致，这里也取 -angle。
+    body.angle = np.radians(-angle)
+
+    # 使用细长的Segment近似挡板，几何上更接近Ahuja & Sheinberg式的“木板”
+    half_w = width / 2.0
+    a = (-half_w, 0.0)
+    b = (half_w, 0.0)
+    shape = pymunk.Segment(body, a, b, height / 2.0)
     shape.elasticity = ELASTICITY
     shape.friction = FRICTION
     space.add(body, shape)

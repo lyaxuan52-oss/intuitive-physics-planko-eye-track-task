@@ -13,6 +13,16 @@ import pylink
 from psychopy import visual, core, event, gui, monitors
 from psychopy.hardware import keyboard
 
+# Eyelink 图形库（在被试机屏幕上进行校准/验证）
+try:
+    from EyeLinkCoreGraphicsPsychoPy import EyeLinkCoreGraphicsPsychoPy
+except Exception:
+    try:
+        # 某些安装方式会把类挂在 pylink 包下
+        from pylink import EyeLinkCoreGraphicsPsychoPy  # type: ignore
+    except Exception:
+        EyeLinkCoreGraphicsPsychoPy = None  # type: ignore
+
 from config import *
 import config  # 也需要import模块本身以便调用update_screen_params
 
@@ -220,6 +230,18 @@ class PlankoExperiment:
             wrapWidth=int(1200 * self.coord_scale_x)
         )
         
+        # 右上角显示当前 trial / block 进度的小文字
+        counter_height = int(24 * min(self.coord_scale_x, self.coord_scale_y))
+        counter_x = SCREEN_WIDTH / 2 - 120
+        counter_y = SCREEN_HEIGHT / 2 - 40
+        self.trial_counter_text = visual.TextStim(
+            self.win,
+            text='',
+            pos=(counter_x, counter_y),
+            height=counter_height,
+            color='white'
+        )
+        
         # 球和挡板（用于呈现静态场景和动画）
         self.ball = visual.Circle(
             self.win, radius=BALL_RADIUS, fillColor='red', lineColor='red'
@@ -318,7 +340,9 @@ class PlankoExperiment:
             return
 
         try:
-            self.el = pylink.EyeLink(None)
+            print(f"尝试连接 Eyelink 主机 {EYELINK_HOST_IP}，当前工作目录: {Path.cwd()}")
+            # 使用配置文件中的 Eyelink 主机 IP
+            self.el = pylink.EyeLink(EYELINK_HOST_IP)
         except Exception as e:
             print(f"无法连接到Eyelink主机，跳过眼动记录: {e}")
             self.el = None
@@ -329,6 +353,7 @@ class PlankoExperiment:
         sid = "".join(ch for ch in sid if ch.isalnum()) or "S000"
         sid = sid[:8].upper()
         self.edf_file = f"{sid}.EDF"
+        print(f"[DEBUG] Eyelink SubjectID: {self.subject_id}, 生成 EDF 文件名: {self.edf_file}")
 
         try:
             self.el.openDataFile(self.edf_file)
@@ -341,13 +366,17 @@ class PlankoExperiment:
             self.el = None
             return
 
-        # 告诉Eyelink当前显示器的像素坐标
+        # 告诉Eyelink当前显示器的像素坐标（使用设计分辨率，避免校准图形整体偏移）
         try:
+            calib_w, calib_h = DESIGN_WIDTH, DESIGN_HEIGHT
+            print(
+                f"[DEBUG] Eyelink 校准分辨率: {calib_w}x{calib_h}, PsychoPy 窗口大小: {self.win.size}"
+            )
             self.el.sendCommand(
-                "screen_pixel_coords 0 0 %d %d" % (SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1)
+                "screen_pixel_coords 0 0 %d %d" % (calib_w - 1, calib_h - 1)
             )
             self.el.sendMessage(
-                "DISPLAY_COORDS 0 0 %d %d" % (SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1)
+                "DISPLAY_COORDS 0 0 %d %d" % (calib_w - 1, calib_h - 1)
             )
         except Exception as e:
             print(f"设置DISPLAY_COORDS失败: {e}")
@@ -373,6 +402,12 @@ class PlankoExperiment:
             pass
 
         try:
+            try:
+                ver = self.el.getTrackerVersionString()
+                print(f"Eyelink tracker version: {ver}")
+            except Exception as e:
+                print(f"无法获取 Eyelink 版本信息: {e}")
+
             self.el.setOfflineMode()
             if pylink is not None:
                 pylink.msecDelay(50)
@@ -382,6 +417,44 @@ class PlankoExperiment:
         print("Eyelink 已连接，EDF 文件名:", self.edf_file)
         print("请在Eyelink主机上完成校准/验证，然后开始实验。")
         
+    def run_eyelink_calibration(self):
+        """在被试机屏幕上运行 Eyelink 校准/验证（如果图形库可用）。"""
+        print("[DEBUG] run_eyelink_calibration: el is None?", self.el is None,
+              " EyeLinkCoreGraphicsPsychoPy is None?", EyeLinkCoreGraphicsPsychoPy is None)
+
+        if self.el is None or pylink is None:
+            print("[DEBUG] 跳过屏幕校准：Eyelink 连接对象不存在或 pylink 不可用。")
+            return
+        if EyeLinkCoreGraphicsPsychoPy is None:
+            # 环境中没有安装 EyeLinkCoreGraphicsPsychoPy，退回到主机屏幕校准
+            print("[DEBUG] 跳过屏幕校准：未找到 EyeLinkCoreGraphicsPsychoPy 库，将使用主机屏幕校准。")
+            return
+
+        try:
+            # 使用当前 PsychoPy 窗口作为校准显示
+            print("[DEBUG] 创建 EyeLinkCoreGraphicsPsychoPy 显示环境并调用 doTrackerSetup()...")
+            genv = EyeLinkCoreGraphicsPsychoPy(self.el, self.win)
+            pylink.openGraphicsEx(genv)
+
+            # 使用 HV5 校准
+            try:
+                self.el.setOfflineMode()
+                self.el.sendCommand("calibration_type=HV5")
+            except Exception:
+                pass
+
+            # 运行 SR 自带的校准/验证流程（会在被试机屏幕上画注视点等）
+            self.el.doTrackerSetup()
+
+            try:
+                self.el.setOfflineMode()
+                pylink.msecDelay(50)
+            except Exception:
+                pass
+            print("[DEBUG] doTrackerSetup() 结束，返回实验脚本。")
+        except Exception as e:
+            print(f"Eyelink 屏幕校准失败，将继续使用主机屏幕校准: {e}")
+
     def draw_planks(self, planks_json):
         """绘制挡板"""
         planks = json.loads(planks_json)
@@ -475,10 +548,10 @@ class PlankoExperiment:
                 su_level = int(trial_info['SU_level'])
                 outcome = str(trial_info['PhysOutcome'])
 
-                el.sendMessage(
-                    f"TRIALID {trial_id} BLOCK {block_id} BOARDID {board_id} "
-                    f"HV {hv} SU {su_level} OUTCOME {outcome}"
-                )
+                # 按 Eyelink / Data Viewer 的推荐格式：
+                # 1) 单独一条 "TRIALID N" 作为 trial 边界
+                # 2) 其它信息通过 !V TRIAL_VAR 标记
+                el.sendMessage(f"TRIALID {trial_id}")
                 # Data Viewer 变量标记
                 el.sendMessage(f"!V TRIAL_VAR TrialID {trial_id}")
                 el.sendMessage(f"!V TRIAL_VAR BlockID {block_id}")
@@ -493,11 +566,22 @@ class PlankoExperiment:
             except Exception as e:
                 print(f"Eyelink trial start failed, continue without eye tracking: {e}")
         
+        # 根据 TrialID / BlockID 更新右上角进度文本
+        total_trials = len(self.trial_sequence)
+        current_trial = int(trial_info['TrialID'])
+        current_block = int(trial_info['BlockID'])
+        self.trial_counter_text.text = (
+            f"Trial {current_trial}/{total_trials}   "
+            f"Block {current_block}/{N_BLOCKS}"
+        )
+
         # 1. 注视点
         fixation_jitter = np.random.uniform(-FIXATION_JITTER, FIXATION_JITTER)
         fixation_duration = (FIXATION_DURATION + fixation_jitter) / 1000.0  # 转换为秒
         
         self.fixation.draw()
+        # 注视点阶段也显示右上角进度
+        self.trial_counter_text.draw()
         self.win.flip()
         core.wait(fixation_duration)
         
@@ -538,6 +622,8 @@ class PlankoExperiment:
                 stim.draw()
             for stim in self.catcher_right_parts:
                 stim.draw()
+            # 右上角 trial / block 计数
+            self.trial_counter_text.draw()
             
             self.win.flip()
 
@@ -632,6 +718,9 @@ class PlankoExperiment:
             confirm_button.draw()
             confirm_text.draw()
 
+            # 右上角 trial / block 计数
+            self.trial_counter_text.draw()
+
             self.win.flip()
 
             # 检查鼠标和键盘事件
@@ -684,6 +773,9 @@ class PlankoExperiment:
             psychopy_y = SCREEN_HEIGHT / 2 - point['y']
             self.ball.pos = (psychopy_x, psychopy_y)
             self.ball.draw()
+
+            # 右上角 trial / block 计数
+            self.trial_counter_text.draw()
             
             self.win.flip()
             core.wait(1.0 / FPS)  # 按照物理模拟的帧率播放
@@ -755,6 +847,9 @@ class PlankoExperiment:
             self.win.flip()
             event.waitKeys(keyList=['space'])
 
+            # 休息结束后，在被试机上重新进行一次 Eyelink 校准
+            self.run_eyelink_calibration()
+
         if self.el is not None and pylink is not None:
             try:
                 self.el.sendMessage(f"BLOCK_END {block_id}")
@@ -766,6 +861,7 @@ class PlankoExperiment:
         try:
             self.setup_psychopy()
             self.setup_eyelink()
+            self.run_eyelink_calibration()
             self.show_instructions()
             
             # 运行所有blocks
@@ -812,13 +908,18 @@ class PlankoExperiment:
 
                 if self.edf_file:
                     local_edf = self.output_dir / self.edf_file
+                    print(f"准备接收 EDF: {self.edf_file}, 当前工作目录: {Path.cwd()}\n"
+                          f"目标路径(绝对): {local_edf.resolve()}")
                     try:
                         self.el.closeDataFile()
                     except Exception:
                         pass
                     try:
-                        self.el.receiveDataFile(self.edf_file, str(local_edf))
-                        print(f"EDF文件已保存到: {local_edf}")
+                        result = self.el.receiveDataFile(self.edf_file, str(local_edf))
+                        if result == 0 and local_edf.exists():
+                            print(f"EDF文件已保存到: {local_edf.resolve()}")
+                        else:
+                            print(f"接收EDF文件失败，返回码 {result}，本地路径: {local_edf.resolve()}")
                     except Exception as e:
                         print(f"接收EDF文件失败: {e}")
 

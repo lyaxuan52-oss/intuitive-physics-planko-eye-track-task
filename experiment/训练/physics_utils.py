@@ -21,6 +21,8 @@ def create_ball(space, x, y):
     moment = pymunk.moment_for_circle(mass, 0, BALL_RADIUS)
     body = pymunk.Body(mass, moment)
     body.position = x, y
+    # 为了抑制极端高弹后长时间乱弹，这里给球体增加轻微线性阻尼
+    body.damping = 0.98
     shape = pymunk.Circle(body, BALL_RADIUS)
     shape.elasticity = ELASTICITY
     shape.friction = FRICTION
@@ -34,16 +36,15 @@ def create_plank(space, x, y, angle, width=PLANK_WIDTH, height=PLANK_HEIGHT):
     """创建静态挡板"""
     body = pymunk.Body(body_type=pymunk.Body.STATIC)
     body.position = x, y
-    body.angle = np.radians(angle)
-    
-    # 创建矩形挡板
-    vertices = [
-        (-width/2, -height/2),
-        (width/2, -height/2),
-        (width/2, height/2),
-        (-width/2, height/2)
-    ]
-    shape = pymunk.Poly(body, vertices)
+    # 注意：PsychoPy 绘制时使用的是 ori = -angle，为了保证画面上的倾斜方向
+    # 和物理仿真中的倾斜方向一致，这里也取 -angle。
+    body.angle = np.radians(-angle)
+
+    # 使用细长的Segment近似挡板，几何上更接近Ahuja & Sheinberg式的“木板”
+    half_w = width / 2.0
+    a = (-half_w, 0.0)
+    b = (half_w, 0.0)
+    shape = pymunk.Segment(body, a, b, height / 2.0)
     shape.elasticity = ELASTICITY
     shape.friction = FRICTION
     space.add(body, shape)
@@ -112,8 +113,11 @@ def create_catchers(space):
     return catchers
 
 
-def run_simulation(space, ball_body, ball_shape, planks=None, max_time=10.0):
+def run_simulation(space, ball_body, ball_shape, planks=None, max_time=10.0, substeps=10):
     """运行物理模拟并返回球的落点、轨迹和第一次碰撞位置
+
+    Args:
+        substeps: 每帧的子步数，越大越精确但越慢（生成时建议10，运行时建议20）
 
     返回: (landing, trajectory, first_collision_side)
         landing: 'left', 'right', or 'none'
@@ -123,7 +127,6 @@ def run_simulation(space, ball_body, ball_shape, planks=None, max_time=10.0):
 
     # 使用较小的子步长提高碰撞精度，减少穿板/空气墙
     visual_dt = 1.0 / FPS
-    substeps = 20
     dt = visual_dt / substeps
 
     t = 0.0
@@ -131,6 +134,7 @@ def run_simulation(space, ball_body, ball_shape, planks=None, max_time=10.0):
     landing = 'none'
     first_collision_side = 'none'
     first_collision_detected = False
+    invalid = False
 
     prev_vy = float(ball_body.velocity.y)
 
@@ -140,7 +144,7 @@ def run_simulation(space, ball_body, ball_shape, planks=None, max_time=10.0):
     left_top_y = CATCHER_Y - half_h
     right_top_y = CATCHER_Y - half_h  # 两个杯底高度相同
 
-    while t < max_time and landing == 'none':
+    while t < max_time and landing == 'none' and not invalid:
         # 在子步中精细检测是否跨越接球器底板的“上边界”
         prev_bottom_y = float(ball_body.position.y + BALL_RADIUS)
 
@@ -150,6 +154,26 @@ def run_simulation(space, ball_body, ball_shape, planks=None, max_time=10.0):
             x_sub, y_sub = ball_body.position
             curr_bottom_y = float(y_sub + BALL_RADIUS)
 
+            # 检查球是否穿入挡板
+            if planks:
+                for p in planks:
+                    if point_inside_rotated_rect(
+                        x_sub,
+                        y_sub,
+                        p['x'],
+                        p['y'],
+                        PLANK_WIDTH,
+                        PLANK_HEIGHT,
+                        p['angle'],
+                    ):
+                        invalid = True
+                        break
+
+            if invalid:
+                landing = 'none'
+                break
+
+            # 检测是否击中接球器底部
             if landing == 'none':
                 # 左杯：球底边从上方跨越到杯底上边界以下，且水平投影落在杯底宽度范围内
                 if (
@@ -157,6 +181,11 @@ def run_simulation(space, ball_body, ball_shape, planks=None, max_time=10.0):
                     and (CATCHER_LEFT_X - half_w <= x_sub <= CATCHER_LEFT_X + half_w)
                 ):
                     landing = 'left'
+                    # 立即停止球的运动
+                    ball_body.velocity = (0.0, 0.0)
+                    ball_body.angular_velocity = 0.0
+                    # 立即跳出子步循环，不再进行任何物理模拟
+                    break
 
                 # 右杯：同理
                 elif (
@@ -164,11 +193,14 @@ def run_simulation(space, ball_body, ball_shape, planks=None, max_time=10.0):
                     and (CATCHER_RIGHT_X - half_w <= x_sub <= CATCHER_RIGHT_X + half_w)
                 ):
                     landing = 'right'
-
-            if landing != 'none':
-                # 一旦击中接球器底部上边界，立刻停球，避免在杯内乱弹或飞到另一侧
-                ball_body.velocity = (0.0, 0.0)
-                break
+                    # 立即停止球的运动
+                    ball_body.velocity = (0.0, 0.0)
+                    ball_body.angular_velocity = 0.0
+                    # 立即跳出子步循环，不再进行任何物理模拟
+                    break
+            
+            # 更新前一个底边位置，用于下一个子步的跨越检测
+            prev_bottom_y = curr_bottom_y
 
         x, y = ball_body.position
         vx, vy = ball_body.velocity
@@ -210,17 +242,60 @@ def run_simulation(space, ball_body, ball_shape, planks=None, max_time=10.0):
     return landing, trajectory, first_collision_side
 
 
-def generate_random_planks(n_planks=N_PLANKS, seed=None):
+def planks_overlap(plank1, plank2, min_distance=40):
+    """
+    检查两个挡板是否重叠（简化版本：使用中心距离判断）
+    
+    Args:
+        plank1: 第一个挡板 {'x', 'y', 'angle'}
+        plank2: 第二个挡板
+        min_distance: 最小允许中心距离（像素）
+    
+    Returns:
+        True if 重叠，False otherwise
+    """
+    # 计算两个挡板中心点的距离
+    dx = plank1['x'] - plank2['x']
+    dy = plank1['y'] - plank2['y']
+    distance = np.sqrt(dx**2 + dy**2)
+    
+    # 如果距离太近，认为重叠
+    return distance < min_distance
 
+
+def generate_random_planks(n_planks=N_PLANKS, seed=None):
+    """
+    生成随机挡板配置，确保挡板之间不重叠
+    """
     if seed is not None:
         np.random.seed(seed)
     
     planks = []
-    for _ in range(n_planks):
-        x = np.random.uniform(SCREEN_WIDTH * 0.2, SCREEN_WIDTH * 0.8)
-        y = np.random.uniform(PLANK_Y_MIN, PLANK_Y_MAX)
-        angle = np.random.uniform(-45, 45)  # degrees
-        planks.append({'x': x, 'y': y, 'angle': angle})
+    max_attempts_per_plank = 100  # 每个挡板最多尝试100次
+    
+    for i in range(n_planks):
+        for attempt in range(max_attempts_per_plank):
+            # 生成随机位置和角度
+            x = np.random.uniform(SCREEN_WIDTH * 0.2, SCREEN_WIDTH * 0.8)
+            y = np.random.uniform(PLANK_Y_MIN, PLANK_Y_MAX)
+            angle = np.random.uniform(-45, 45)  # degrees
+            
+            new_plank = {'x': x, 'y': y, 'angle': angle}
+            
+            # 检查是否与已有挡板重叠
+            overlap = False
+            for existing_plank in planks:
+                if planks_overlap(new_plank, existing_plank):
+                    overlap = True
+                    break
+            
+            if not overlap:
+                # 不重叠，添加这个挡板
+                planks.append(new_plank)
+                break
+        else:
+            # 达到最大尝试次数仍未找到合适位置，使用最后生成的位置（略微放松约束）
+            planks.append(new_plank)
     
     return planks
 
@@ -303,3 +378,16 @@ def circle_intersects_rect(cx, cy, radius, rect_cx, rect_cy, rect_w, rect_h):
     dx = cx - closest_x
     dy = cy - closest_y
     return dx * dx + dy * dy <= radius * radius
+
+
+def point_inside_rotated_rect(px, py, rect_cx, rect_cy, rect_w, rect_h, angle_deg):
+    angle = np.radians(angle_deg)
+    dx = px - rect_cx
+    dy = py - rect_cy
+    cos_a = np.cos(-angle)
+    sin_a = np.sin(-angle)
+    local_x = dx * cos_a - dy * sin_a
+    local_y = dx * sin_a + dy * cos_a
+    half_w = rect_w / 2.0
+    half_h = rect_h / 2.0
+    return (-half_w < local_x < half_w) and (-half_h < local_y < half_h)
